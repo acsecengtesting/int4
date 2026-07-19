@@ -1,0 +1,5 @@
+.env
+vmlinux.h
+*.bpf.o
+sqli_detect
+*.class
