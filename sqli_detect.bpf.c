@@ -24,7 +24,8 @@ struct sqli_event {
     __u64 timestamp;
     __u64 mnt_ns_inum;
     __u8  pattern_type;
-    __u8  _pad[7];
+    __u8  blocked;
+    __u8  _pad[6];
     char  query[MAX_QUERY_LEN];
     char  comm[16];
 };
@@ -33,6 +34,15 @@ struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 256 * 1024);
 } sqli_events SEC(".maps");
+
+// Configuration: when block_mode is non-zero, null out detected SQLi queries
+// so PostgreSQL sees an empty string and returns an error to the client.
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} sqli_config SEC(".maps");
 
 // Detect SQL injection patterns using a simple bounded scan.
 // Linux 6.8 supports bounded loops in BPF, so no need for #pragma unroll.
@@ -132,7 +142,21 @@ int BPF_KPROBE(uprobe_pg_parse_query, const char *query_string)
     e->tid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
     e->timestamp = bpf_ktime_get_ns();
     e->pattern_type = pattern;
-    __builtin_memset(e->_pad, 0, 7);
+    e->blocked = 0;
+    __builtin_memset(e->_pad, 0, 6);
+
+    // Check if block mode is enabled
+    __u32 key = 0;
+    __u32 *block_mode = bpf_map_lookup_elem(&sqli_config, &key);
+    if (block_mode && *block_mode) {
+        // Null out the query string in postgres process memory.
+        // This causes pg_parse_query to see an empty string and return
+        // an error ("empty query") to the client without executing anything.
+        char null_byte = '\0';
+        long write_ret = bpf_probe_write_user((void *)query_string, &null_byte, 1);
+        if (write_ret == 0)
+            e->blocked = 1;
+    }
 
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     e->mnt_ns_inum = BPF_CORE_READ(task, nsproxy, mnt_ns, ns.inum);
