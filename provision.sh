@@ -57,6 +57,10 @@ echo "=== Create project dir ==="
 mkdir -p /root/sqli_detect
 
 echo ""
+echo "=== Create project dir ==="
+mkdir -p /root/sqli_detect
+
+echo ""
 echo "=== Versions ==="
 psql --version
 clang --version | head -1
